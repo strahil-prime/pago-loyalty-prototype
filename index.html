@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#111111">
+<title>PagoEfectivo Prototype</title>
+<style>
+  :root { --k: 1; }
+  html, body { margin: 0; height: 100%; background: #111; overscroll-behavior: none; }
+  body { display: flex; align-items: center; justify-content: center; font-family: -apple-system, system-ui, sans-serif; -webkit-tap-highlight-color: transparent; }
+  #phone { position: relative; overflow: hidden; background: #f8f8f8; width: calc(375px * var(--k)); height: calc(812px * var(--k)); }
+  @media (min-width: 600px) { #phone { border-radius: calc(44px * var(--k)); box-shadow: 0 0 0 10px #2a2a2a, 0 30px 80px rgba(0,0,0,.6); } }
+  .screen { position: absolute; inset: 0; overflow-x: hidden; overflow-y: auto; -webkit-overflow-scrolling: touch; background: #f8f8f8; scrollbar-width: none; }
+  .screen::-webkit-scrollbar { display: none; }
+  .screen .content { position: relative; width: 100%; }
+  .screen img.bg { display: block; width: 100%; height: auto; user-select: none; -webkit-user-drag: none; pointer-events: none; }
+  .hs { position: absolute; background: transparent; border: 0; padding: 0; margin: 0; cursor: pointer; border-radius: calc(10px * var(--k)); }
+  .fixed { position: absolute; left: 0; right: 0; background-repeat: no-repeat; background-size: 100% auto; z-index: 5; }
+  .fixed.top { top: 0; background-position: top center; pointer-events: none; }
+  .fixed.bottom { bottom: 0; background-position: bottom center; }
+  .flash .hs { background: rgba(0, 122, 255, .18); outline: 2px solid rgba(0, 122, 255, .55); transition: background .1s; }
+  /* transitions */
+  .screen.enter-push { animation: pushIn .28s cubic-bezier(.2,.8,.2,1) both; z-index: 2; }
+  .screen.enter-pop { animation: popIn .28s cubic-bezier(.2,.8,.2,1) both; }
+  .screen.enter-sheet { animation: sheetIn .32s cubic-bezier(.2,.8,.2,1) both; z-index: 2; }
+  .screen.enter-fade { animation: fadeIn .2s ease both; z-index: 2; }
+  @keyframes pushIn { from { transform: translateX(100%); } to { transform: none; } }
+  @keyframes popIn { from { transform: translateX(-25%); opacity: .6; } to { transform: none; opacity: 1; } }
+  @keyframes sheetIn { from { transform: translateY(100%); } to { transform: none; } }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+</style>
+</head>
+<body>
+<div id="phone" aria-live="polite"></div>
+<script>
+// Hotspot coordinates are in Figma points (screen width 375). `foot` = fixed footer crop
+// (height from the bottom of the frame) whose hotspots are relative to the footer's top.
+const TABS = h => ({ h, hs: [
+  { r: [0, 0, 75, h], go: 'home', mode: 'tab' }, { r: [75, 0, 75, h] }, { r: [150, 0, 75, h] },
+  { r: [225, 0, 75, h], go: 'puntos', mode: 'tab' }, { r: [300, 0, 75, h], go: 'stores', mode: 'tab' } ] });
+const BTN = (h, spec) => ({ h, hs: [ { r: [16, h - 98, 343, 52], ...spec } ] });
+const BACK = { r: [4, 44, 64, 52], back: true };
+const CLOSE = { r: [8, 54, 64, 60], back: true };
+const S = {
+  home: { img: 'home', h: 812, foot: TABS(83), hs: [
+    { r: [148, 208, 80, 116], go: 'cip_code' },
+    { r: [16, 343, 311, 148], go: 'puntos', mode: 'tab' },
+    { r: [292, 508, 80, 34], go: 'home_tx' } ] },
+  home_tx: { img: 'home_tx', h: 813, hs: [ BACK, { r: [16, 198, 343, 74], go: 'home_tx_detail', mode: 'sheet' } ] },
+  home_tx_detail: { img: 'home_tx_detail', h: 813, hs: [ { r: [8, 64, 64, 60], back: true } ] },
+  puntos: { img: 'puntos', h: 1558, foot: TABS(81), hs: [
+    { r: [320, 40, 52, 52], go: 'howitworks', mode: 'sheet' },
+    { r: [60, 174, 133, 30], go: 'canjear' },
+    { r: [193, 174, 122, 30], go: 'premios_excl' },
+    { r: [24, 218, 108, 116], go: 'canjear' },
+    { r: [134, 218, 108, 116], go: 'premios_todos' },
+    { r: [244, 218, 108, 116], go: 'act' },
+    { r: [16, 780, 343, 120], go: 'challenge', mode: 'sheet' } ] },
+  howitworks: { img: 'howitworks', h: 978, foot: BTN(114, { back: true }), hs: [ CLOSE ] },
+  challenge: { img: 'challenge', h: 812, foot: BTN(114, { back: true }), hs: [ CLOSE ] },
+  canjear: { img: () => state.joined ? 'canjear_joined' : 'canjear', h: 985, hs: [
+    BACK, { r: [16, 610, 343, 98], go: () => state.joined ? 'sorteo_joined' : 'sorteo', mode: 'sheet' } ] },
+  sorteo: { img: 'sorteo', h: 812, foot: BTN(114, { act: () => { state.joined = true; replace('sorteo_joined', 'fade'); } }), hs: [ CLOSE ] },
+  sorteo_joined: { img: 'sorteo_joined', h: 812, hs: [ CLOSE ] },
+  premios_todos: { img: () => state.joined ? 'premios_todos_joined' : 'premios_todos', h: 1684, hs: [
+    BACK,
+    { r: [132, 148, 112, 48], go: 'premios_excl', mode: 'replace' },
+    { r: [246, 148, 116, 48], go: 'premios_canj', mode: 'replace' },
+    { r: [10, 421, 355, 94], go: 'canjear' },
+    { r: [10, 524, 355, 76], go: 'temu_detail', mode: 'sheet' },
+    { r: [10, 1074, 355, 98], go: () => state.joined ? 'sorteo_joined' : null, mode: 'sheet' } ] },
+  premios_excl: { img: 'premios_excl', h: 812, hs: [
+    BACK,
+    { r: [16, 148, 112, 48], go: 'premios_todos', mode: 'replace' },
+    { r: [248, 148, 112, 48], go: 'premios_canj', mode: 'replace' },
+    { r: [16, 261, 343, 72], go: 'temu_detail', mode: 'sheet' },
+    { r: [16, 521, 343, 72], act: () => showToast() } ] },
+  toast: { img: 'toast', h: 812, hs: [] },
+  premios_canj: { img: 'premios_canj', h: 1280, hs: [
+    BACK,
+    { r: [16, 148, 112, 48], go: 'premios_todos', mode: 'replace' },
+    { r: [132, 148, 112, 48], go: 'premios_excl', mode: 'replace' },
+    { r: [16, 1000, 343, 94], go: 'code_fifa', mode: 'sheet' } ] },
+  temu_detail: { img: 'temu_detail', h: 812, foot: BTN(114, { back: true }), hs: [ CLOSE ] },
+  code_fifa: { img: 'code_fifa', h: 812, foot: BTN(114, { back: true }), hs: [ CLOSE ] },
+  stores: { img: 'stores', h: 812, foot: TABS(83), hs: [
+    { r: [292, 176, 80, 36], go: 'premios_excl' },
+    { r: [16, 218, 314, 148], go: 'premios_excl' } ] },
+  act: { img: 'act', h: 812, hs: [ BACK, { r: [16, 368, 343, 74], go: 'act_detail', mode: 'sheet' } ] },
+  act_detail: { img: 'act_detail', h: 812, hs: [ CLOSE ] },
+  cip_code: { img: 'cip_code', h: 813, hs: [ BACK, { r: [16, 462, 343, 48], go: 'checkout' } ] },
+  checkout: { img: () => 'checkout_' + state.sel, h: 891, foot: { h: 110, hs: [ { r: [16, 16, 343, 50], go: 'review' } ] }, hs: [
+    BACK,
+    { r: [16, 335, 166, 72], act: () => select('0') },
+    { r: [192, 335, 166, 72], act: () => select('10') },
+    { r: [16, 417, 166, 72], act: () => select('20') } ] },
+  review: { img: () => 'review_' + state.sel, h: 888, foot: { h: 110, hs: [ { r: [16, 16, 343, 50], go: 'success' } ] }, hs: [ BACK ] },
+  success: { img: () => 'success_' + state.sel, h: 813, foot: { h: 110, hs: [ { r: [16, 16, 343, 50], act: () => reset('home') } ] }, hs: [] },
+};
+const state = { joined: false, sel: '20' };
+const stack = [];
+const phone = document.getElementById('phone');
+const val = v => typeof v === 'function' ? v() : v;
+
+function fit() {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const desk = vw >= 600;
+  const k = desk ? Math.min((vw - 40) / 375, (vh - 40) / 812) : Math.min(vw, 480) / 375;
+  document.documentElement.style.setProperty('--k', k);
+  phone.style.height = desk ? '' : vh + 'px';
+}
+window.addEventListener('resize', fit);
+
+function px(n) { return `calc(${n}px * var(--k))`; }
+function hotspot(h, parent) {
+  const b = document.createElement('button');
+  b.className = 'hs'; b.setAttribute('aria-label', h.go ? String(val(h.go) || '') : 'acción');
+  const [x, y, w, hh] = h.r;
+  Object.assign(b.style, { left: px(x), top: px(y), width: px(w), height: px(hh) });
+  if (!h.go && !h.back && !h.act) { b.style.cursor = 'default'; b.dataset.noop = '1'; }
+  b.addEventListener('click', e => {
+    e.stopPropagation();
+    if (h.act) return h.act();
+    if (h.back) return back();
+    const target = val(h.go); if (!target) return flash();
+    if (h.mode === 'tab') return reset(target);
+    if (h.mode === 'replace') return replace(target, 'fade');
+    if (h.mode === 'none') return;
+    push(target, h.mode === 'sheet' ? 'sheet' : 'push');
+  });
+  parent.appendChild(b);
+}
+function build(name, anim) {
+  const def = S[name]; const img = val(def.img);
+  const el = document.createElement('div'); el.className = 'screen'; el.dataset.name = name;
+  const c = document.createElement('div'); c.className = 'content';
+  const im = document.createElement('img'); im.className = 'bg'; im.src = `img/${img}.webp`; im.alt = '';
+  c.appendChild(im);
+  def.hs.forEach(h => hotspot(h, c));
+  el.appendChild(c);
+  const t = document.createElement('div'); t.className = 'fixed top';
+  t.style.backgroundImage = `url(img/${img}.webp)`; t.style.height = px(44); el._top = t;
+  if (def.foot) {
+    const f = document.createElement('div'); f.className = 'fixed bottom';
+    f.style.backgroundImage = `url(img/${img}.webp)`; f.style.height = px(def.foot.h);
+    def.foot.hs.forEach(h => hotspot(h, f)); el._bottom = f;
+  }
+  el.addEventListener('click', flash);
+  if (anim) el.classList.add('enter-' + anim);
+  return el;
+}
+function show(name, anim) {
+  const old = [...phone.children];
+  const el = build(name, anim);
+  phone.appendChild(el);
+  if (el._top) phone.appendChild(el._top);
+  if (el._bottom) phone.appendChild(el._bottom);
+  const cleanup = () => old.forEach(o => o.remove());
+  if (anim) setTimeout(cleanup, 330); else cleanup();
+  try { history.replaceState(null, '', '#' + name); } catch (e) {}
+}
+function push(name, anim) { stack.push(name); show(name, anim); }
+function replace(name, anim) { stack[stack.length - 1] = name; show(name, anim); }
+function back() { if (stack.length > 1) { stack.pop(); show(stack[stack.length - 1], 'pop'); } }
+function reset(name) { stack.length = 0; stack.push(name); show(name, 'fade'); }
+function select(v) { state.sel = v; const sc = phone.querySelector('.screen'); const y = sc ? sc.scrollTop : 0; show('checkout'); phone.querySelector('.screen').scrollTop = y; }
+function showToast() { show('toast', 'fade'); setTimeout(() => { if (stack[stack.length - 1] === 'premios_excl') show('premios_excl', 'fade'); }, 1800); }
+let flashT;
+function flash() { phone.classList.add('flash'); clearTimeout(flashT); flashT = setTimeout(() => phone.classList.remove('flash'), 450); }
+
+// Preload images so transitions feel instant.
+['home','puntos','canjear','canjear_joined','sorteo','sorteo_joined','premios_todos','premios_todos_joined','premios_excl','premios_canj','temu_detail','toast','cip_code','checkout_0','checkout_10','checkout_20','review_0','review_10','review_20','success_0','success_10','success_20','stores','howitworks','challenge','act','act_detail','home_tx','home_tx_detail','code_fifa']
+  .forEach(n => { const i = new Image(); i.src = `img/${n}.webp`; });
+
+fit();
+const start = (location.hash || '').slice(1);
+reset(S[start] && ['home','puntos','stores','cip_code'].includes(start) ? start : 'home');
+</script>
+</body>
+</html>
