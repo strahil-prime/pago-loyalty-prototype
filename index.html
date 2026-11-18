@@ -28,9 +28,6 @@
   .view.edge { box-shadow: -6px 0 24px rgba(0,0,0,.16); }
   .view .dim { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; z-index: 9; }
   .view.overlay { pointer-events: none; z-index: 20; }
-  /* One status bar for the whole phone, above every screen, so it never slides or doubles up. */
-  #sb { position: absolute; left: 0; right: 0; top: 0; z-index: 30; pointer-events: none; }
-  #sb .l { position: absolute; inset: 0; background-repeat: no-repeat; background-size: 100% auto; background-position: top center; }
 </style>
 </head>
 <body>
@@ -145,6 +142,8 @@ function build(name) {
   const c = document.createElement('div'); c.className = 'content';
   const im = document.createElement('img'); im.className = 'bg'; im.src = `img/${img}.webp`; im.alt = ''; im.decoding = 'sync';
   c.appendChild(im); def.hs.forEach(h => hotspot(h, c)); sc.appendChild(c); v.appendChild(sc);
+  // Status bar belongs to the screen, so the whole page (status bar included) slides as one piece.
+  const t = document.createElement('div'); t.className = 'fixed top'; t.style.backgroundImage = `url(img/${img}.webp)`; t.style.height = px(44); v.appendChild(t);
   if (def.foot) {
     const f = document.createElement('div'); f.className = 'fixed bottom';
     f.style.backgroundImage = `url(img/${img}.webp)`; f.style.height = px(def.foot.h);
@@ -162,15 +161,6 @@ function ready(v) {
 function anim(el, kf, dur) { return el.animate(kf, { duration: dur, easing: EASE, fill: 'both' }).finished.catch(() => {}); }
 function settle(v) { v.getAnimations({ subtree: true }).forEach(a => a.cancel()); v.classList.remove('moving', 'edge'); }
 const dimOf = v => v.querySelector(':scope > .dim');
-const sb = document.createElement('div'); sb.id = 'sb'; sb.style.height = px(44); phone.appendChild(sb);
-function setSB(img, dur) {
-  const cur = sb.lastElementChild; if (cur && cur.dataset.img === img) return;
-  const l = document.createElement('div'); l.className = 'l'; l.dataset.img = img; l.style.backgroundImage = `url(img/${img}.webp)`;
-  sb.appendChild(l);
-  if (!dur || !cur) { [...sb.children].forEach(c => c !== l && c.remove()); return; }
-  l.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur, easing: 'ease' }).finished.then(() => [...sb.children].forEach(c => c !== l && c.remove())).catch(() => {});
-}
-const clipTop = () => `inset(calc(44px * var(--k)) 0 0 0)`;
 function mark(name) { try { history.replaceState(null, '', '#' + name); } catch (e) {} }
 
 // Refresh a kept view whose image depends on state (e.g. after joining a sweepstake).
@@ -180,7 +170,6 @@ async function refresh(v) {
   v.dataset.img = img;
   v.querySelector('img.bg').src = pre.src;
   v.querySelectorAll('.fixed').forEach(f => f.style.backgroundImage = `url(img/${img}.webp)`);
-  if (v === top_()) setSB(img, T.fade);
 }
 
 async function push(name, mode) {
@@ -190,12 +179,10 @@ async function push(name, mode) {
   from.classList.add('moving'); v.classList.add('moving');
   v.style.visibility = '';
   if (mode === 'sheet') {
-    v.style.clipPath = clipTop();
     await Promise.all([anim(v, [{ transform: 'translateY(100%)' }, { transform: 'none' }], T.sheet),
                        anim(dimOf(from), [{ opacity: 0 }, { opacity: .3 }], T.sheet)]);
-    setSB(v.dataset.img, 160); v.style.clipPath = '';
   } else {
-    v.classList.add('edge'); setSB(v.dataset.img, T.push);
+    v.classList.add('edge');
     await Promise.all([anim(v, [{ transform: 'translateX(100%)' }, { transform: 'none' }], T.push),
                        anim(from, [{ transform: 'none' }, { transform: 'translateX(-30%)' }], T.push),
                        anim(dimOf(from), [{ opacity: 0 }, { opacity: .12 }], T.push)]);
@@ -210,11 +197,10 @@ async function back() {
   to.classList.add('moving'); v.classList.add('moving');
   if (v.dataset.mode === 'sheet') {
     dimOf(to).style.opacity = .3; to.style.visibility = '';
-    v.style.clipPath = clipTop(); setSB(to.dataset.img, 160);
     await Promise.all([anim(v, [{ transform: 'none' }, { transform: 'translateY(100%)' }], T.sheetDown),
                        anim(dimOf(to), [{ opacity: .3 }, { opacity: 0 }], T.sheetDown)]);
   } else {
-    v.classList.add('edge'); setSB(to.dataset.img, T.pop);
+    v.classList.add('edge');
     to.style.transform = 'translateX(-30%)'; to.style.visibility = '';
     await Promise.all([anim(v, [{ transform: 'none' }, { transform: 'translateX(100%)' }], T.pop),
                        anim(to, [{ transform: 'translateX(-30%)' }, { transform: 'none' }], T.pop),
@@ -228,7 +214,7 @@ async function replace(name) {
   if (busy) return; busy = true;
   const from = top_(); const v = build(name); v.dataset.mode = from.dataset.mode || 'push';
   v.style.visibility = 'hidden'; phone.appendChild(v); await ready(v); v.style.visibility = '';
-  setSB(v.dataset.img, T.fade);
+
   await anim(v, [{ opacity: 0 }, { opacity: 1 }], T.fade);
   settle(v); from.remove(); views[views.length - 1] = v; mark(name); busy = false;
 }
@@ -236,7 +222,7 @@ async function replace(name) {
 async function reset(name, instant) {
   if (busy) return; busy = true;
   const v = build(name); v.style.visibility = 'hidden'; phone.appendChild(v); await ready(v); v.style.visibility = '';
-  setSB(v.dataset.img, instant ? 0 : T.fade);
+
   if (!instant) await anim(v, [{ opacity: 0 }, { opacity: 1 }], T.fade);
   settle(v); [...phone.querySelectorAll('.view')].forEach(o => o !== v && o.remove());
   views.length = 0; views.push(v); mark(name); busy = false;
