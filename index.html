@@ -21,15 +21,16 @@
   .fixed.top { top: 0; background-position: top center; pointer-events: none; }
   .fixed.bottom { bottom: 0; background-position: bottom center; }
   .flash .hs { background: rgba(0, 122, 255, .18); outline: 2px solid rgba(0, 122, 255, .55); transition: background .1s; }
-  /* transitions */
-  .screen.enter-push { animation: pushIn .28s cubic-bezier(.2,.8,.2,1) both; z-index: 2; }
-  .screen.enter-pop { animation: popIn .28s cubic-bezier(.2,.8,.2,1) both; }
-  .screen.enter-sheet { animation: sheetIn .32s cubic-bezier(.2,.8,.2,1) both; z-index: 2; }
-  .screen.enter-fade { animation: fadeIn .2s ease both; z-index: 2; }
-  @keyframes pushIn { from { transform: translateX(100%); } to { transform: none; } }
-  @keyframes popIn { from { transform: translateX(-25%); opacity: .6; } to { transform: none; opacity: 1; } }
-  @keyframes sheetIn { from { transform: translateY(100%); } to { transform: none; } }
-  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  /* Each .view is one whole screen (status bar, scroll area, fixed bars) and moves as one piece. */
+  #phone { isolation: isolate; -webkit-mask-image: -webkit-radial-gradient(white, black); }
+  .view { position: absolute; inset: 0; overflow: hidden; background: #f8f8f8; backface-visibility: hidden; -webkit-backface-visibility: hidden; }
+  .view.moving { will-change: transform; }
+  .view.edge { box-shadow: -6px 0 24px rgba(0,0,0,.16); }
+  .view .dim { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; z-index: 9; }
+  .view.overlay { pointer-events: none; z-index: 20; }
+  /* One status bar for the whole phone, above every screen, so it never slides or doubles up. */
+  #sb { position: absolute; left: 0; right: 0; top: 0; z-index: 30; pointer-events: none; }
+  #sb .l { position: absolute; inset: 0; background-repeat: no-repeat; background-size: 100% auto; background-position: top center; }
 </style>
 </head>
 <body>
@@ -77,7 +78,6 @@ const S = {
     { r: [248, 148, 112, 48], go: 'premios_canj', mode: 'replace' },
     { r: [16, 261, 343, 72], go: 'temu_detail', mode: 'sheet' },
     { r: [16, 521, 343, 72], act: () => showToast() } ] },
-  toast: { img: 'toast', h: 812, hs: [] },
   premios_canj: { img: 'premios_canj', h: 1280, hs: [
     BACK,
     { r: [16, 148, 112, 48], go: 'premios_todos', mode: 'replace' },
@@ -132,51 +132,142 @@ function hotspot(h, parent) {
   });
   parent.appendChild(b);
 }
-function build(name, anim) {
+const EASE = 'cubic-bezier(.32,.72,0,1)';   // iOS navigation curve
+const T = { push: 420, pop: 380, sheet: 460, sheetDown: 380, fade: 200 };
+let busy = false;
+const views = [];                              // navigation stack of live .view elements
+const top_ = () => views[views.length - 1];
+
+function build(name) {
   const def = S[name]; const img = val(def.img);
-  const el = document.createElement('div'); el.className = 'screen'; el.dataset.name = name;
+  const v = document.createElement('div'); v.className = 'view'; v.dataset.name = name; v.dataset.img = img;
+  const sc = document.createElement('div'); sc.className = 'screen';
   const c = document.createElement('div'); c.className = 'content';
-  const im = document.createElement('img'); im.className = 'bg'; im.src = `img/${img}.webp`; im.alt = '';
-  c.appendChild(im);
-  def.hs.forEach(h => hotspot(h, c));
-  el.appendChild(c);
-  const t = document.createElement('div'); t.className = 'fixed top';
-  t.style.backgroundImage = `url(img/${img}.webp)`; t.style.height = px(44); el._top = t;
+  const im = document.createElement('img'); im.className = 'bg'; im.src = `img/${img}.webp`; im.alt = ''; im.decoding = 'sync';
+  c.appendChild(im); def.hs.forEach(h => hotspot(h, c)); sc.appendChild(c); v.appendChild(sc);
   if (def.foot) {
     const f = document.createElement('div'); f.className = 'fixed bottom';
     f.style.backgroundImage = `url(img/${img}.webp)`; f.style.height = px(def.foot.h);
-    def.foot.hs.forEach(h => hotspot(h, f)); el._bottom = f;
+    def.foot.hs.forEach(h => hotspot(h, f)); v.appendChild(f);
   }
-  el.addEventListener('click', flash);
-  if (anim) el.classList.add('enter-' + anim);
-  return el;
+  const d = document.createElement('div'); d.className = 'dim'; v.appendChild(d);
+  v.addEventListener('click', flash);
+  return v;
 }
-function show(name, anim) {
-  const old = [...phone.children];
-  const el = build(name, anim);
-  phone.appendChild(el);
-  if (el._top) phone.appendChild(el._top);
-  if (el._bottom) phone.appendChild(el._bottom);
-  const cleanup = () => old.forEach(o => o.remove());
-  if (anim) setTimeout(cleanup, 330); else cleanup();
-  try { history.replaceState(null, '', '#' + name); } catch (e) {}
+// Wait until the screen image is decoded so nothing slides in blank.
+function ready(v) {
+  const im = v.querySelector('img.bg');
+  return Promise.race([im.decode ? im.decode().catch(() => {}) : Promise.resolve(), new Promise(r => setTimeout(r, 500))]);
 }
-function push(name, anim) { stack.push(name); show(name, anim); }
-function replace(name, anim) { stack[stack.length - 1] = name; show(name, anim); }
-function back() { if (stack.length > 1) { stack.pop(); show(stack[stack.length - 1], 'pop'); } }
-function reset(name) { stack.length = 0; stack.push(name); show(name, 'fade'); }
-function select(v) { state.sel = v; const sc = phone.querySelector('.screen'); const y = sc ? sc.scrollTop : 0; show('checkout'); phone.querySelector('.screen').scrollTop = y; }
-function showToast() { show('toast', 'fade'); setTimeout(() => { if (stack[stack.length - 1] === 'premios_excl') show('premios_excl', 'fade'); }, 1800); }
+function anim(el, kf, dur) { return el.animate(kf, { duration: dur, easing: EASE, fill: 'both' }).finished.catch(() => {}); }
+function settle(v) { v.getAnimations({ subtree: true }).forEach(a => a.cancel()); v.classList.remove('moving', 'edge'); }
+const dimOf = v => v.querySelector(':scope > .dim');
+const sb = document.createElement('div'); sb.id = 'sb'; sb.style.height = px(44); phone.appendChild(sb);
+function setSB(img, dur) {
+  const cur = sb.lastElementChild; if (cur && cur.dataset.img === img) return;
+  const l = document.createElement('div'); l.className = 'l'; l.dataset.img = img; l.style.backgroundImage = `url(img/${img}.webp)`;
+  sb.appendChild(l);
+  if (!dur || !cur) { [...sb.children].forEach(c => c !== l && c.remove()); return; }
+  l.animate([{ opacity: 0 }, { opacity: 1 }], { duration: dur, easing: 'ease' }).finished.then(() => [...sb.children].forEach(c => c !== l && c.remove())).catch(() => {});
+}
+const clipTop = () => `inset(calc(44px * var(--k)) 0 0 0)`;
+function mark(name) { try { history.replaceState(null, '', '#' + name); } catch (e) {} }
+
+// Refresh a kept view whose image depends on state (e.g. after joining a sweepstake).
+async function refresh(v) {
+  const img = val(S[v.dataset.name].img); if (img === v.dataset.img) return;
+  const pre = new Image(); pre.src = `img/${img}.webp`; try { await pre.decode(); } catch (e) {}
+  v.dataset.img = img;
+  v.querySelector('img.bg').src = pre.src;
+  v.querySelectorAll('.fixed').forEach(f => f.style.backgroundImage = `url(img/${img}.webp)`);
+  if (v === top_()) setSB(img, T.fade);
+}
+
+async function push(name, mode) {
+  if (busy) return; busy = true;
+  const from = top_(); const v = build(name); v.dataset.mode = mode;
+  v.style.visibility = 'hidden'; phone.appendChild(v); await ready(v);
+  from.classList.add('moving'); v.classList.add('moving');
+  v.style.visibility = '';
+  if (mode === 'sheet') {
+    v.style.clipPath = clipTop();
+    await Promise.all([anim(v, [{ transform: 'translateY(100%)' }, { transform: 'none' }], T.sheet),
+                       anim(dimOf(from), [{ opacity: 0 }, { opacity: .3 }], T.sheet)]);
+    setSB(v.dataset.img, 160); v.style.clipPath = '';
+  } else {
+    v.classList.add('edge'); setSB(v.dataset.img, T.push);
+    await Promise.all([anim(v, [{ transform: 'translateX(100%)' }, { transform: 'none' }], T.push),
+                       anim(from, [{ transform: 'none' }, { transform: 'translateX(-30%)' }], T.push),
+                       anim(dimOf(from), [{ opacity: 0 }, { opacity: .12 }], T.push)]);
+  }
+  settle(from); settle(v); from.style.visibility = 'hidden';
+  views.push(v); mark(name); busy = false;
+}
+async function back() {
+  if (busy || views.length < 2) return; busy = true;
+  const v = views.pop(); const to = top_();
+  await refresh(to);
+  to.classList.add('moving'); v.classList.add('moving');
+  if (v.dataset.mode === 'sheet') {
+    dimOf(to).style.opacity = .3; to.style.visibility = '';
+    v.style.clipPath = clipTop(); setSB(to.dataset.img, 160);
+    await Promise.all([anim(v, [{ transform: 'none' }, { transform: 'translateY(100%)' }], T.sheetDown),
+                       anim(dimOf(to), [{ opacity: .3 }, { opacity: 0 }], T.sheetDown)]);
+  } else {
+    v.classList.add('edge'); setSB(to.dataset.img, T.pop);
+    to.style.transform = 'translateX(-30%)'; to.style.visibility = '';
+    await Promise.all([anim(v, [{ transform: 'none' }, { transform: 'translateX(100%)' }], T.pop),
+                       anim(to, [{ transform: 'translateX(-30%)' }, { transform: 'none' }], T.pop),
+                       anim(dimOf(to), [{ opacity: .12 }, { opacity: 0 }], T.pop)]);
+  }
+  to.style.transform = ''; dimOf(to).style.opacity = '';
+  v.remove(); settle(to); mark(to.dataset.name); busy = false;
+}
+// Swap the current screen in place (chips, sweepstake joined) with a quick cross-fade.
+async function replace(name) {
+  if (busy) return; busy = true;
+  const from = top_(); const v = build(name); v.dataset.mode = from.dataset.mode || 'push';
+  v.style.visibility = 'hidden'; phone.appendChild(v); await ready(v); v.style.visibility = '';
+  setSB(v.dataset.img, T.fade);
+  await anim(v, [{ opacity: 0 }, { opacity: 1 }], T.fade);
+  settle(v); from.remove(); views[views.length - 1] = v; mark(name); busy = false;
+}
+// Tab bar: start a fresh stack.
+async function reset(name, instant) {
+  if (busy) return; busy = true;
+  const v = build(name); v.style.visibility = 'hidden'; phone.appendChild(v); await ready(v); v.style.visibility = '';
+  setSB(v.dataset.img, instant ? 0 : T.fade);
+  if (!instant) await anim(v, [{ opacity: 0 }, { opacity: 1 }], T.fade);
+  settle(v); [...phone.querySelectorAll('.view')].forEach(o => o !== v && o.remove());
+  views.length = 0; views.push(v); mark(name); busy = false;
+}
+async function select(s) {
+  if (busy || state.sel === s) return; state.sel = s; await refresh(top_());
+}
+let toastOn = false;
+// "No disponible" pill drops in under the status bar, wherever the list is scrolled.
+async function showToast() {
+  if (toastOn) return; toastOn = true;
+  const t = document.createElement('img'); t.src = 'img/toast_pill.webp'; t.alt = 'No disponible';
+  Object.assign(t.style, { position: 'absolute', zIndex: 25, pointerEvents: 'none', left: px(115), top: px(50), width: px(145), height: px(40),
+    borderRadius: px(20), boxShadow: '0 4px 14px rgba(0,0,0,.16)' });
+  phone.appendChild(t);
+  try { await t.decode(); } catch (e) {}
+  await t.animate([{ opacity: 0, transform: 'translateY(-14px) scale(.96)' }, { opacity: 1, transform: 'none' }], { duration: 320, easing: EASE, fill: 'both' }).finished;
+  await new Promise(r => setTimeout(r, 1800));
+  await t.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(-10px)' }], { duration: 260, easing: 'ease-in', fill: 'both' }).finished;
+  t.remove(); toastOn = false;
+}
 let flashT;
 function flash() { phone.classList.add('flash'); clearTimeout(flashT); flashT = setTimeout(() => phone.classList.remove('flash'), 450); }
 
-// Preload images so transitions feel instant.
-['home','puntos','canjear','canjear_joined','sorteo','sorteo_joined','premios_todos','premios_todos_joined','premios_excl','premios_canj','temu_detail','toast','cip_code','checkout_0','checkout_10','checkout_20','review_0','review_10','review_20','success_0','success_10','success_20','stores','howitworks','challenge','act','act_detail','home_tx','home_tx_detail','code_fifa']
-  .forEach(n => { const i = new Image(); i.src = `img/${n}.webp`; });
+// Preload and decode every image so transitions never wait on the network.
+['home','puntos','canjear','canjear_joined','sorteo','sorteo_joined','premios_todos','premios_todos_joined','premios_excl','premios_canj','temu_detail','toast_pill','cip_code','checkout_0','checkout_10','checkout_20','review_0','review_10','review_20','success_0','success_10','success_20','stores','howitworks','challenge','act','act_detail','home_tx','home_tx_detail','code_fifa']
+  .forEach(n => { const i = new Image(); i.src = `img/${n}.webp`; if (i.decode) i.decode().catch(() => {}); });
 
 fit();
 const start = (location.hash || '').slice(1);
-reset(S[start] && ['home','puntos','stores','cip_code'].includes(start) ? start : 'home');
+reset(S[start] && ['home','puntos','stores','cip_code'].includes(start) ? start : 'home', true);
 </script>
 </body>
 </html>
